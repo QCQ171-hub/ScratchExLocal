@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Claw Bridge · Worker 加载验证</title>
+<style>
+    body { font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+           background:#0f172a; color:#e2e8f0; margin:0; padding:22px; }
+    h1 { font-size:16px; margin:0 0 4px; }
+    .sub { color:#94a3b8; font-size:12.5px; margin-bottom:16px; }
+    #summary { font-weight:600; padding:6px 12px; border-radius:6px;
+               background:#475569; display:inline-block; margin-bottom:14px; }
+    #summary.ok { background:#10b981; color:#052e16; }
+    #summary.bad { background:#ef4444; color:#450a0a; }
+    #log { background:#1e293b; border:1px solid #334155; border-radius:8px;
+           padding:12px 14px; white-space:pre-wrap; font-family:Consolas,monospace;
+           font-size:12.5px; max-height:70vh; overflow:auto; }
+    .v { color:#6ee7b7; } .e { color:#fca5a5; } .t { color:#64748b; }
+</style>
+</head>
+<body>
+
+<h1>Worker 加载验证</h1>
+<div class="sub">
+    这一页走的是<b>真实编辑器</b>的加载路径：<code>vm.extensionManager.loadExtensionURL()</code>
+    → <code>new Worker('extension-worker.js')</code> → <code>importScripts(扩展 url)</code>。
+    与试验台（直接注入实例）不同，这里验证的是本扩展能否被 TurboWarp / Scratch 直接加载。
+</div>
+<div id="summary">运行中…</div>
+<div id="log"></div>
+
+<script src="/serve/harness/node_modules/scratch-vm/dist/web/scratch-vm.js"></script>
+<script>
+'use strict';
+
+const logEl = document.getElementById('log');
+const summaryEl = document.getElementById('summary');
+
+function log (kind, ...parts) {
+    const text = new Date().toLocaleTimeString('zh-CN', {hour12: false}) + '  ' + parts.join(' ');
+    (window.__clawLog = window.__clawLog || []).push(`${kind || '-'}|${text}`);
+    const line = document.createElement('div');
+    if (kind) line.className = kind;
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = new Date().toLocaleTimeString('zh-CN', {hour12: false}) + '  ';
+    line.appendChild(t);
+    line.appendChild(document.createTextNode(parts.join(' ')));
+    logEl.appendChild(line);
+}
+
+const EXTENSION_URL = '/serve/extension/claw-bridge/index.js';
+const checks = [];
+function check (name, pass, detail) {
+    checks.push({name, pass, detail});
+    log(pass ? 'v' : 'e', `${pass ? 'PASS' : 'FAIL'} ${name}`, detail === undefined ? '' : `· ${detail}`);
+    return pass;
+}
+
+(async () => {
+    try {
+        const vm = new VirtualMachine();
+        window.__clawVM = vm; // 供 CDP 探测
+        check('new VirtualMachine()', !!vm);
+        check('loadExtensionURL 存在', typeof vm.extensionManager.loadExtensionURL === 'function');
+
+        // 抓 Worker 侧的错误：否则 importScripts 失败时只会看到 promise 永不 resolve。
+        const RealWorker = window.Worker;
+        window.Worker = function (url) {
+            const worker = new RealWorker(url);
+            log('', 'new Worker(', String(url), ')');
+            worker.addEventListener('error', event => {
+                log('e', `worker error: ${event.message || '(no message)'} @ ${event.filename}:${event.lineno}`);
+            });
+            worker.addEventListener('messageerror', () => log('e', 'worker messageerror'));
+            return worker;
+        };
+        window.addEventListener('error', event => log('e', `window error: ${event.message}`));
+        window.addEventListener('unhandledrejection', event => log('e', `unhandled rejection: ${event.reason}`));
+
+        // 真正走 Worker 的加载路径，但加超时——失败时要知道卡在哪。
+        const loadResult = await Promise.race([
+            vm.extensionManager.loadExtensionURL(EXTENSION_URL).then(() => 'loaded'),
+            new Promise(resolve => setTimeout(() => resolve('timeout'), 10000))
+        ]);
+        check('loadExtensionURL 完成（Worker 已加载扩展）', loadResult === 'loaded',
+            `结果=${loadResult}, pending=${vm.extensionManager.pendingExtensions.length}`);
+
+        // 等 Worker 那边把积木注册进 runtime（跨线程，异步）。
+        const started = Date.now();
+        let info = [];
+        while (Date.now() - started < 8000) {
+            info = vm.runtime._blockInfo.filter(category => category.id === 'clawbridge');
+            if (info.length && info[0].blocks.length >= 10) break;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        check('runtime._blockInfo 出现 clawbridge 分类', info.length === 1,
+            `${info.length} 个分类`);
+        // `_blockInfo[].blocks` 装的是转换后的 `{info, json, xml}` 包装对象，
+        // `---` 分隔符没有 blockType（也没有 json），要和真积木分开数。
+        const blocks = info.length ? info[0].blocks : [];
+        const realBlocks = blocks.filter(entry => entry.info && entry.info.blockType);
+        check('10 个积木注册到 runtime', realBlocks.length === 10,
+            `真积木 ${realBlocks.length} / 含分隔符 ${blocks.length}`);
+
+        // 关键一步：块函数经 Worker 往返（dispatch 代理），真正打到 Rust 后端。
+        const health = vm.runtime.getOpcodeFunction('clawbridge_health');
+        check('getOpcodeFunction(clawbridge_health) 存在', typeof health === 'function');
+
+        const status = await health({});
+        check('通过 Worker 调用 health 拿到真实响应',
+            typeof status === 'string' && status.startsWith('在线'), `返回: ${status}`);
+
+        const echo = vm.runtime.getOpcodeFunction('clawbridge_echo');
+        const echoed = await echo({MESSAGE: 'worker 往返'});
+        check('通过 Worker 调用 echo 往返 unicode',
+            echoed === 'worker 往返', `返回: ${echoed}`);
+
+        const compute = vm.runtime.getOpcodeFunction('clawbridge_compute');
+        const sum = await compute({OP: 'add', A: 2, B: 3, TEXT: ''});
+        check('通过 Worker 调用 compute add 2+3 = 5', Number(sum) === 5, `返回: ${sum}`);
+    } catch (error) {
+        check('加载流程未抛错', false, error && error.stack ? error.stack.split('\n')[0] : String(error));
+        log('e', String(error && error.stack ? error.stack : error));
+    }
+
+    const ok = checks.filter(c => c.pass).length;
+    const bad = checks.length - ok;
+    summaryEl.textContent = `${ok} 成功 / ${bad} 失败`;
+    summaryEl.className = ok && !bad ? 'ok' : 'bad';
+    window.__clawWorkerTest = {ok, bad, total: checks.length,
+        failed: checks.filter(c => !c.pass).map(c => c.name)};
+    log('', '—— 完成 ——');
+})();
+</script>
+</body>
+</html>

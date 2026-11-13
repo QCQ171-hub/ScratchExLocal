@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claw Bridge · scratch-vm 试验台</title>
+<style>
+    :root {
+        --bg: #0f172a;
+        --panel: #1e293b;
+        --panel-2: #273548;
+        --line: #334155;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #2b6cb0;
+        --accent-2: #2c5282;
+        --ok: #10b981;
+        --bad: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+    }
+
+    header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 22px;
+        background: linear-gradient(90deg, #1a365d, #2b6cb0);
+        border-bottom: 1px solid var(--line);
+    }
+
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header .sub { color: #cbd5e1; font-size: 12.5px; }
+
+    #badge {
+        margin-left: auto;
+        padding: 5px 12px;
+        border-radius: 999px;
+        font-size: 12.5px;
+        font-weight: 600;
+        background: #475569;
+        transition: background .2s;
+    }
+
+    #badge.online { background: var(--ok); color: #052e16; }
+    #badge.offline { background: var(--bad); color: #450a0a; }
+
+    main {
+        display: grid;
+        grid-template-columns: minmax(380px, 1fr) minmax(380px, 1fr);
+        gap: 18px;
+        padding: 18px 22px 40px;
+        align-items: start;
+    }
+
+    @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+
+    section.panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    section.panel > h2 {
+        margin: 0;
+        padding: 11px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--line);
+    }
+
+    .body { padding: 14px 16px; }
+
+    .block-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 11px;
+        margin-bottom: 8px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+    }
+
+    .block-row .name {
+        font-weight: 600;
+        color: #93c5fd;
+        font-family: Consolas, ui-monospace, monospace;
+        font-size: 12.5px;
+    }
+
+    .block-row input {
+        width: 88px;
+        padding: 4px 7px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        font: inherit;
+        font-size: 12.5px;
+    }
+
+    .block-row input.wide { width: 150px; }
+
+    button {
+        padding: 4px 12px;
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        border-radius: 5px;
+        font: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+    }
+
+    button:hover { background: #3182ce; }
+    button:disabled { background: #475569; cursor: default; }
+
+    .result {
+        margin-left: auto;
+        max-width: 46%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: Consolas, ui-monospace, monospace;
+        font-size: 12.5px;
+        color: #6ee7b7;
+    }
+
+    .result.err { color: #fca5a5; }
+
+    #log {
+        margin: 0;
+        padding: 12px 16px;
+        max-height: 340px;
+        overflow: auto;
+        background: #0b1220;
+        border-top: 1px solid var(--line);
+        font-family: Consolas, ui-monospace, monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    #log .t { color: #64748b; }
+    #log .k { color: #93c5fd; }
+    #log .v { color: #6ee7b7; }
+    #log .e { color: #fca5a5; }
+
+    .note { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+
+    details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+    details pre {
+        margin: 10px 0 0;
+        padding: 10px;
+        max-height: 260px;
+        overflow: auto;
+        background: #0b1220;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font-size: 11.5px;
+        color: #a5b4fc;
+    }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>Claw Bridge</h1>
+    <span class="sub">scratch-vm 试验台 · 真实 VM，真实 HTTP</span>
+    <span id="badge">检测中…</span>
+</header>
+
+<main>
+    <section class="panel">
+        <h2>扩展积木（由 getInfo() 自动生成）</h2>
+        <div class="body">
+            <p class="note">
+                下面每一行都是 scratch-vm 真实注册的 opcode。点“运行”会用默认参数直接调用
+                <code>runtime.getOpcodeFunction('clawbridge_xxx')</code>，走完整 Promise 往返。
+                地址栏加 <code>?autorun=1</code> 会自动跑一遍全部积木。
+            </p>
+            <div style="margin-bottom:12px">
+                <button id="run-all">全部运行</button>
+                <span id="run-summary" class="note" style="margin-left:10px"></span>
+            </div>
+            <div id="runner"></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <h2>scratch-vm 内部状态</h2>
+        <div class="body">
+            <div id="introspect"></div>
+            <details style="margin-top:14px">
+                <summary>查看转换后的 Blockly JSON</summary>
+                <pre id="blockjson"></pre>
+            </details>
+        </div>
+        <pre id="log"></pre>
+    </section>
+</main>
+
+<script src="/serve/harness/node_modules/scratch-vm/dist/web/scratch-vm.js"></script>
+<script>
+'use strict';
+
+const logEl = document.getElementById('log');
+const badge = document.getElementById('badge');
+const runnerEl = document.getElementById('runner');
+const introspectEl = document.getElementById('introspect');
+
+/** Append one line to the console panel. Also kept on `window.__clawLog`
+ *  (same shape as worker-test.html) so CDP scripts can read it back. */
+function log (kind, ...rest) {
+    const stamp = new Date().toLocaleTimeString('zh-CN', {hour12: false});
+    const text = rest.map(r => {
+        if (typeof r === 'string') return r;
+        try { return JSON.stringify(r); } catch (e) { return String(r); }
+    }).join(' ');
+    (window.__clawLog = window.__clawLog || []).push(`${kind || '-'}|${stamp}  ${text}`);
+    const line = document.createElement('div');
+    line.className = kind;
+    line.innerHTML = `<span class="t">${stamp}</span>  `;
+    line.appendChild(document.createTextNode(text));
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    return line;
+}
+
+/** Read the extension source and evaluate it with a tiny CommonJS shim. */
+async function loadExtensionSource (url) {
+    const response = await fetch(url, {cache: 'no-store'});
+    if (!response.ok) throw new Error(`无法读取扩展源码: HTTP ${response.status}`);
+    const source = await response.text();
+    const shim = {exports: {}};
+    new Function('module', 'exports', source)(shim, shim.exports);
+    return shim.exports;
+}
+
+async function main () {
+    // ------------------------------------------------------------ VM 启动
+    const vm = new VirtualMachine();
+    window.vm = vm; // 方便在控制台里玩
+
+    const ExtensionClass = await loadExtensionSource(
+        '/serve/extension/claw-bridge/index.js');
+    const extension = new ExtensionClass(vm.runtime);
+    window.extension = extension;
+
+    log('', 'scratch-vm ready:', typeof vm);
+    vm.extensionManager._registerInternalExtension(extension);
+    await new Promise(r => setTimeout(r, 300));
+
+    const info = extension.getInfo();
+    const category = vm.runtime._blockInfo.find(c => c.id === info.id);
+    if (!category) throw new Error('扩展注册失败：runtime 里没有 clawbridge 分类');
+
+    const blocks = info.blocks.filter(b => typeof b === 'object');
+    log('', `扩展 ${info.id} 注册成功，${blocks.length} 个积木进入 opcode 表`);
+
+    // ------------------------------------------------------ 自省信息面板
+    const missing = blocks
+        .filter(b => typeof vm.runtime.getOpcodeFunction(`clawbridge_${b.opcode}`) !== 'function')
+        .map(b => b.opcode);
+
+    introspectEl.innerHTML = `
+        <div class="block-row"><span class="name">runtime._blockInfo</span>
+            <span class="result">${category.id} · ${category.name}</span></div>
+        <div class="block-row"><span class="name">opcodes</span>
+            <span class="result">${blocks.length - missing.length}/${blocks.length} 已注册</span></div>
+        <div class="block-row"><span class="name">backend</span>
+            <span class="result">${extension.baseUrl}</span></div>`;
+
+    document.getElementById('blockjson').textContent = JSON.stringify(
+        category.blocks.map(b => b.json).filter(Boolean), null, 2);
+
+    // ------------------------------------------------------ 自动生成运行面板
+    /** Each entry runs one block with the values currently in the panel. */
+    const runners = [];
+
+    for (const block of blocks) {
+        const row = document.createElement('div');
+        row.className = 'block-row';
+
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = block.opcode;
+        row.appendChild(name);
+
+        const inputs = {};
+        for (const [argName, arg] of Object.entries(block.arguments || {})) {
+            if (arg.menu) {
+                const select = document.createElement('select');
+                const menu = info.menus[arg.menu];
+                for (const item of menu.items) {
+                    const value = typeof item === 'string' ? item : item.value;
+                    const label = typeof item === 'string' ? item : item.label;
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = label;
+                    select.appendChild(option);
+                }
+                select.style.cssText = 'padding:4px 6px;background:#0f172a;color:#e2e8f0;' +
+                    'border:1px solid #334155;border-radius:5px;font-size:12.5px';
+                row.appendChild(select);
+                inputs[argName] = () => select.value;
+            } else {
+                const input = document.createElement('input');
+                input.value = arg.defaultValue ?? '';
+                if (String(arg.defaultValue ?? '').length > 6) input.classList.add('wide');
+                input.title = `${argName} (${arg.type})`;
+                row.appendChild(input);
+                inputs[argName] = () => (arg.type === 'number' ?
+                    Number(input.value) : input.value);
+            }
+        }
+
+        const button = document.createElement('button');
+        button.textContent = '运行';
+        row.appendChild(button);
+
+        const result = document.createElement('span');
+        result.className = 'result';
+        row.appendChild(result);
+
+        button.addEventListener('click', () => runBlock());
+
+        async function runBlock () {
+            const args = {};
+            for (const [key, read] of Object.entries(inputs)) args[key] = read();
+
+            const opcode = `clawbridge_${block.opcode}`;
+            const fn = vm.runtime.getOpcodeFunction(opcode);
+            if (typeof fn !== 'function') {
+                result.textContent = '未注册';
+                result.classList.add('err');
+                return false;
+            }
+
+            button.disabled = true;
+            result.textContent = '…';
+            result.classList.remove('err');
+            const started = performance.now();
+            try {
+                // 真·Promise 往返：和 VM 线程里执行时走的是同一个函数。
+                const value = await fn(args);
+                const elapsed = Math.round(performance.now() - started);
+                result.textContent = `${value}  (${elapsed}ms)`;
+                log('', `${opcode}(${JSON.stringify(args)}) →`, String(value));
+                if (extension.lastError) {
+                    result.classList.add('err');
+                    log('e', 'lastError:', extension.lastError);
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                result.textContent = `抛错: ${error.message}`;
+                result.classList.add('err');
+                log('e', `${opcode} threw:`, error.message);
+                return false;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        runners.push(runBlock);
+        runnerEl.appendChild(row);
+    }
+
+    // ------------------------------------------------------------- 健康检查
+    const health = vm.runtime.getOpcodeFunction('clawbridge_health');
+    try {
+        const status = await health({});
+        const online = status.startsWith('在线');
+        badge.textContent = status;
+        badge.className = online ? 'online' : 'offline';
+        log(online ? 'v' : 'e', 'health:', status);
+    } catch (error) {
+        badge.textContent = '后端未启动';
+        badge.className = 'offline';
+        log('e', 'health failed:', error.message);
+    }
+
+    // ------------------------------------------------------- 全部运行 / autorun
+    const summary = document.getElementById('run-summary');
+    const runAllButton = document.getElementById('run-all');
+
+    async function runAll () {
+        runAllButton.disabled = true;
+        summary.textContent = '运行中…';
+        let ok = 0;
+        let bad = 0;
+        for (const run of runners) {
+            // 顺序执行，避免并发请求把计数器结果搅乱。
+            if (await run()) ok++; else bad++;
+        }
+        summary.textContent = `${ok} 成功 / ${bad} 失败`;
+        summary.style.color = bad === 0 ? '#6ee7b7' : '#fca5a5';
+        runAllButton.disabled = false;
+        // 供自动化读取的最终结论。
+        window.__clawTestResult = {ok, bad, total: runners.length};
+        return {ok, bad};
+    }
+
+    runAllButton.addEventListener('click', runAll);
+
+    if (new URLSearchParams(location.search).has('autorun')) {
+        await runAll();
+    }
+}
+
+main().catch(error => {
+    console.error(error);
+    log('e', '试验台启动失败:', error.message);
+    badge.textContent = '启动失败';
+    badge.className = 'offline';
+});
+</script>
+</body>
+</html>
